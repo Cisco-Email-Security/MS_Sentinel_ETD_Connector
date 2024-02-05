@@ -1,9 +1,8 @@
-#Copyright (c) 2024*
-
 """
 Azure Function to fetch Email Threat Detection messages from the Cisco ETD Api and send the mesages to Sentinel to be able to analyze them on Log Analytics.
 """
 import logging
+import datetime
 import json
 import requests
 import hashlib
@@ -11,7 +10,6 @@ import hmac
 import base64
 import os
 from http import HTTPStatus
-from datetime import datetime, timezone, timedelta
 import azure.functions as func
 
 # Global variables for Connector
@@ -28,7 +26,9 @@ PAGESIZE = 50
 APISCHEME = "https://api."
 APITOKENENDPOINT = ".etd.cisco.com/v1/oauth/token"
 APIMESSAGEENDPOINT = ".etd.cisco.com/v1/messages/search"
-
+LAST = "Last"
+NEXT = "Next"
+UTCZONE = "Z"
 
 def retryRequest(url, headers, jsonData=None, retryCount=3):
     """
@@ -57,12 +57,11 @@ def retryRequest(url, headers, jsonData=None, retryCount=3):
                 retryCount -= 1     
     return None
 
-
 class ETD():
     """
     Class ETD is responsible for fetching the messages from ETD API
     """
-    def __init__(self, apiKey, clientId, clientSecret, verdicts, region, lastExecutedTime="2023-12-24T09:00:00Z", currentTime="2023-12-25T09:00:00Z"):
+    def __init__(self, apiKey, clientId, clientSecret, verdicts, region, lastExecutedTime, currentTime):
         self.apiKey = apiKey
         self.clientId = clientId
         self.clientSecret = clientSecret
@@ -73,7 +72,6 @@ class ETD():
         self.currentUtcTime = currentTime
         self.tokenUrl = APISCHEME + self.region + APITOKENENDPOINT
         self.messageUrl = APISCHEME + self.region + APIMESSAGEENDPOINT
-
 
     def generateToken(self):
         """
@@ -174,7 +172,6 @@ class Sentinel():
             batchedMessages = messages[i:i+CHUNKSIZE]
             self.postMessages(batchedMessages)
 
-
     def postMessages(self, body):
         """
         Function to post messages to log analytics
@@ -183,7 +180,7 @@ class Sentinel():
         method = 'POST'
         contentType = 'application/json'
         resource = '/api/logs'
-        rfc1123date = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+        rfc1123date = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
         contentLength = len(json.dumps(body))
         signature = self.buildSignature(rfc1123date, contentLength , method, contentType, resource)
         uri = "https://" + WORKSPACEID + ".ods.opinsights.azure.com" + resource + "?api-version=2016-04-01"
@@ -205,7 +202,6 @@ class Sentinel():
                     logging.error("Error during sending messages to Azure Sentinel. Response code: {}".format(response.status_code))
             else:
                 logging.error("Failed to post data to Azure Sentinel")
-
 
 def setAndValidateEnvConfigurations():
     """
@@ -237,20 +233,19 @@ def setAndValidateEnvConfigurations():
         return False
     return True
        
-def ciscoEtdConnector():
+def ciscoEtdConnector(last_timestamp_utc, next_timestamp_utc):
     """
     Entry point of the code, responsible for fetching ETD messages and post it to Microsoft Sentinel
+    :param last_timestamp_utc: last execution time of the azure function
+    :param next_timestamp_utc: next execution time of the azure function
     """
     # Check if env variables are configured
     if not setAndValidateEnvConfigurations():
         return
     # Create Sentinel class object
     sentinelObj = Sentinel()
-    # Set interval for etd data collection
-    startTime = (datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    endTime = (datetime.utcnow().replace(tzinfo=timezone.utc)).strftime('%Y-%m-%dT%H:%M:%SZ')
     # Create ETD class object
-    etdObj = ETD(APIKEY, CLIENTID, CLIENTSECRET, VERDICTS, REGION, startTime, endTime)
+    etdObj = ETD(APIKEY, CLIENTID, CLIENTSECRET, VERDICTS, REGION, last_timestamp_utc, next_timestamp_utc)
     nextPageToken = None
     #Generate Token for ETD api
     if not etdObj.generateToken():
@@ -267,11 +262,14 @@ def ciscoEtdConnector():
         sentinelObj.sendMessagesToSentinel(etdMessages)
 
 def main(mytimer: func.TimerRequest) -> None:
-    utc_timestamp = datetime.utcnow().replace(
+    utc_timestamp = datetime.datetime.utcnow().replace(
         tzinfo=datetime.timezone.utc).isoformat()
 
+    # get last and next execution time
+    last_timestamp_utc = mytimer.schedule_status[LAST].replace("+00:00", UTCZONE)
+    next_timestamp_utc = mytimer.schedule_status[NEXT].replace("+00:00", UTCZONE)
     if mytimer.past_due:
         logging.info('The timer is past due!')
 
     logging.info('Python timer trigger function ran at %s', utc_timestamp)
-    ciscoEtdConnector()
+    ciscoEtdConnector(last_timestamp_utc, next_timestamp_utc)
