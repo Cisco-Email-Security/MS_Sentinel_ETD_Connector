@@ -7,6 +7,14 @@
             "minLength": 1,
             "type": "string"
         },
+        "WorkspaceName": {
+            "type": "string",
+            "defaultValue": "",
+            "minLength": 1,
+            "metadata": {
+                "description": "Log analytics workspace name"
+            }
+        },
         "WorkspaceID": {
             "type": "string",
             "defaultValue": "",
@@ -96,6 +104,57 @@
                     "keySource": "Microsoft.Storage"
                 }
             }
+        },
+        {
+            "type": "Microsoft.OperationalInsights/workspaces",
+            "apiVersion": "2015-11-01-preview",
+            "name": "[parameters('WorkspaceName')]",
+            "location": "[resourceGroup().location]"
+        },
+        {
+            "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+            "apiVersion": "2015-11-01-preview",
+            "name": "[format('{0}/{1}', parameters('WorkspaceName'), 'ETD Mailboxes query')]",
+            "properties": {
+                "etag": "*",
+                "displayName": "Top 10 mailboxes",
+                "category": "ETD",
+                "query": "CiscoETD_CL | project Mailbox = parse_json(tostring(mailboxes_s)) | mv-expand Mailbox | summarize ThreatCount = count() by tostring(Mailbox) | top 10 by ThreatCount desc | project Mailbox, ThreatCount | render columnchart",
+                "version": 1
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('WorkspaceName'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+            "apiVersion": "2015-11-01-preview",
+            "name": "[format('{0}/{1}', parameters('WorkspaceName'), 'ETD Verdicts query')]",
+            "properties": {
+                "etag": "*",
+                "displayName": "Distribution of Verdict type",
+                "category": "ETD",
+                "query": "CiscoETD_CL | summarize TotalMessages = count() by verdict_category_s | extend Categories = coalesce(verdict_category_s, 'No Verdict') | project Verdicts = Categories, TotalMessages | render piechart title = 'Email Threat Defense Messages by Verdict'",
+                "version": 1
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('WorkspaceName'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+            "apiVersion": "2015-11-01-preview",
+            "name": "[format('{0}/{1}', parameters('WorkspaceName'), 'ETD Incidents query')]",
+            "properties": {
+                "etag": "*",
+                "displayName": "Incidents aggregated over a period based on verdicts ",
+                "category": "ETD",
+                "query": "CiscoETD_CL | summarize ThreatCount = count() by verdict_category_s, TimeBin = bin(TimeGenerated, 1h) | project TimeBin, verdict_category_s, ThreatCount | render columnchart",
+                "version": 1
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('WorkspaceName'))]"
+            ]
         },
         {
             "type": "Microsoft.Web/sites",
